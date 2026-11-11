@@ -60,15 +60,20 @@ export default function App() {
         <Logo />
         <nav className="crumbs" aria-label="Progress">
           <button type="button" className={step === 'range' ? 'on' : 'done'} onClick={() => goto('range')}>
-            <i>1</i> Range{rangeName && step !== 'range' ? `: ${rangeName}` : ''}
+            <i>1</i>
+            <span className="cr-l">Range</span>
+            {rangeName && step !== 'range' && <span className="cr-x">: {rangeName}</span>}
           </button>
           <span className="sep" />
           <button type="button" className={step === 'model' ? 'on' : step === 'design' ? 'done' : ''} disabled={!range} onClick={() => range && goto('model')}>
-            <i>2</i> Design{model && step === 'design' ? `: ${model.name}` : ''}
+            <i>2</i>
+            <span className="cr-l">Design</span>
+            {model && step === 'design' && <span className="cr-x">: {model.name}</span>}
           </button>
           <span className="sep" />
           <button type="button" className={step === 'design' ? 'on' : ''} disabled={!config} onClick={() => config && goto('design')}>
-            <i>3</i> Configure
+            <i>3</i>
+            <span className="cr-l">Configure</span>
           </button>
         </nav>
         <div className="top-actions">
@@ -115,12 +120,14 @@ export default function App() {
               </div>
               <footer className="pricebar">
                 <div className="pb-main" onClick={() => setPanelOpen((v) => !v)} role="button" tabIndex={0}>
-                  <span className="pb-l">Your price <em className="pb-tap">· tap to {panelOpen ? 'view in 3D' : 'customise'}</em></span>
+                  <span className="pb-l">
+                    Your price <em className="pb-tap">· tap to {panelOpen ? 'view in 3D' : 'customise'}</em>
+                  </span>
                   <strong>{price.total != null ? gbp(price.total) : 'POA'}</strong>
                   <span className="pb-sub">
-                    {price.floorArea.toFixed(1)} m² · {config.width}m × {config.depth}m internal
-                    {price.options > 0 && <> · options {gbp(price.options)}</>}
+                    {price.floorArea.toFixed(1)} m² · {config.width} × {config.depth}m internal
                   </span>
+                  {price.options > 0 && <span className="pb-sub">incl. {gbp(price.options)} options</span>}
                 </div>
                 <button type="button" className="btn primary" onClick={() => { setCategory('summary'); setPanelOpen(true); }}>
                   Summary

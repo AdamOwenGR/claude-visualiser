@@ -26,7 +26,7 @@ function presetFor(geo: BuildingGeometry, preset: number) {
     case 3:
       return { pos: new THREE.Vector3(R * 0.5, R * 1.6 + 6, R * 0.9 + 3), target: new THREE.Vector3(0, 0.5, 0) };
     case 4:
-      return { pos: new THREE.Vector3(-geo.intW / 2 + 0.45, geo.floorH + 1.5, -geo.intD / 2 + 0.45), target: new THREE.Vector3(geo.intW * 0.15, geo.floorH + 1.1, geo.intD / 2 + 1.5) };
+      return { pos: new THREE.Vector3(-geo.intW / 2 + 0.45, geo.floorH + 1.5, -geo.intD / 2 + 0.45), target: new THREE.Vector3(geo.intW * 0.15, geo.floorH + 1.25, geo.intD / 2 + 1.5) };
     default:
       return { pos: new THREE.Vector3(R * 1.05 + 3.2, h * 0.8 + 1.4, R * 1.15 + 3.6), target };
   }
@@ -37,7 +37,7 @@ function CameraRig({ geo, preset, modelKey }: { geo: BuildingGeometry; preset: n
   const goal = useRef<{ pos: THREE.Vector3; target: THREE.Vector3; t: number } | null>(null);
   const { camera, size } = useThree();
   const lastKey = useRef('');
-  const aspectK = Math.max(1, 1.35 / Math.max(0.3, size.width / size.height));
+  const aspectK = Math.min(2.4, Math.max(1, 1.2 / Math.max(0.3, size.width / size.height)));
 
   useEffect(() => {
     const key = modelKey + ':' + preset;
@@ -55,6 +55,13 @@ function CameraRig({ geo, preset, modelKey }: { geo: BuildingGeometry; preset: n
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset, modelKey, geo.extW, geo.extD, geo.extHeight, aspectK]);
+
+  // Wide lens inside the room, a long showroom lens outside.
+  useEffect(() => {
+    const cam = camera as THREE.PerspectiveCamera;
+    cam.fov = preset === 4 ? 68 : 32;
+    cam.updateProjectionMatrix();
+  }, [preset, camera]);
 
   useFrame((_, dt) => {
     const g = goal.current;

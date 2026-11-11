@@ -56,14 +56,15 @@ export interface SwatchOption {
   group?: string;
 }
 
-export function Swatches({ options, value, onChange }: { options: SwatchOption[]; value: string | null; onChange: (id: string) => void }) {
+export function Swatches({ options, value, onChange, compact }: { options: SwatchOption[]; value: string | null; onChange: (id: string) => void; compact?: boolean }) {
   return (
-    <div className="swatches">
+    <div className={`swatches ${compact ? 'compact' : ''}`}>
       {options.map((o) => (
         <button key={o.id} type="button" className={`swatch ${value === o.id ? 'on' : ''}`} onClick={() => onChange(o.id)} title={o.label}>
           <span className="sw" style={o.style} />
           <span className="sw-l">{o.label}</span>
-          {(o.price !== undefined || o.included) && <PriceTag price={o.price ?? 0} included={o.included} />}
+          {/* Only flag the standard option and paid upgrades; free alternatives stay quiet. */}
+          <span className="sw-t">{o.included ? <span className="tag tag-inc">Standard</span> : o.price && o.price > 0 ? <PriceTag price={o.price} /> : null}</span>
         </button>
       ))}
     </div>

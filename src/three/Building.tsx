@@ -86,31 +86,10 @@ function useMaterials(geo: BuildingGeometry, cfg: DesignConfig) {
 // Wall panel with openings cut out (extruded shape; metre-based UVs)
 // ---------------------------------------------------------------------------
 
-function wallGeometry(L: number, H: number, T: number, holes: { x: number; y: number; w: number; h: number }[]) {
-  const shape = new THREE.Shape();
-  // Openings touching the right or left edge become notches (corner windows).
-  const notchR = holes.find((h) => h.x + h.w / 2 >= L - 0.015);
-  const notchL = holes.find((h) => h.x - h.w / 2 <= 0.015);
-  const pts: [number, number][] = [[0, 0], [L, 0]];
-  if (notchR) pts.push([L, notchR.y], [notchR.x - notchR.w / 2, notchR.y], [notchR.x - notchR.w / 2, notchR.y + notchR.h], [L, notchR.y + notchR.h]);
-  pts.push([L, H], [0, H]);
-  if (notchL) pts.push([0, notchL.y + notchL.h], [notchL.x + notchL.w / 2, notchL.y + notchL.h], [notchL.x + notchL.w / 2, notchL.y], [0, notchL.y]);
-  shape.moveTo(pts[0][0], pts[0][1]);
-  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
-  shape.closePath();
-  for (const h of holes) {
-    if (h === notchR || h === notchL) continue;
-    const p = new THREE.Path();
-    const x0 = h.x - h.w / 2, y0 = h.y, x1 = h.x + h.w / 2, y1 = Math.min(h.y + h.h, H - 0.04);
-    p.moveTo(x0, y0);
-    p.lineTo(x0, y1);
-    p.lineTo(x1, y1);
-    p.lineTo(x1, y0);
-    p.closePath();
-    shape.holes.push(p);
-  }
-  const g = new THREE.ExtrudeGeometry(shape, { depth: T, bevelEnabled: false });
-  // Lid faces: z=0 (interior) first, then z=T (exterior). Split so each gets its own material.
+interface Hole { x: number; y: number; w: number; h: number }
+
+/** Split the extrude lid group so the inner face (z=0) and outer face (z=T) get separate materials. */
+function splitGroups(g: THREE.ExtrudeGeometry) {
   const lid = g.groups[0];
   const side = g.groups[1];
   g.clearGroups();
@@ -120,38 +99,105 @@ function wallGeometry(L: number, H: number, T: number, holes: { x: number; y: nu
   return g;
 }
 
-function gableGeometry(L: number, H0: number, rise: number, T: number) {
+/**
+ * Wall panel of length L whose top runs from h0 (x=0) to h1 (x=L), with openings.
+ * Openings that touch the bottom or a side edge become notches in the outline instead of
+ * holes, so the triangulation never produces degenerate faces at the floor line.
+ */
+function wallGeometry(L: number, h0: number, h1: number, T: number, holes: Hole[]) {
+  const topAt = (x: number) => h0 + ((h1 - h0) * x) / L;
+  const eps = 0.015;
+  const bottom = holes.filter((h) => h.y <= 0.001).sort((a, b) => a.x - b.x);
+  const notchR = holes.find((h) => h.y > 0.001 && h.x + h.w / 2 >= L - eps);
+  const notchL = holes.find((h) => h.y > 0.001 && h.x - h.w / 2 <= eps);
+  const pts: [number, number][] = [[0, 0]];
+  for (const h of bottom) {
+    const x0 = Math.max(0.001, h.x - h.w / 2);
+    const x1 = Math.min(L - 0.001, h.x + h.w / 2);
+    const top = Math.min(h.h, Math.min(topAt(x0), topAt(x1)) - 0.04);
+    pts.push([x0, 0], [x0, top], [x1, top], [x1, 0]);
+  }
+  pts.push([L, 0]);
+  if (notchR) pts.push([L, notchR.y], [notchR.x - notchR.w / 2, notchR.y], [notchR.x - notchR.w / 2, notchR.y + notchR.h], [L, notchR.y + notchR.h]);
+  pts.push([L, h1], [0, h0]);
+  if (notchL) pts.push([0, notchL.y + notchL.h], [notchL.x + notchL.w / 2, notchL.y + notchL.h], [notchL.x + notchL.w / 2, notchL.y], [0, notchL.y]);
   const shape = new THREE.Shape();
-  shape.moveTo(0, H0 - 0.001);
-  shape.lineTo(L, H0 - 0.001);
-  shape.lineTo(L / 2, H0 + rise);
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], pts[i][1]);
   shape.closePath();
-  const g = new THREE.ExtrudeGeometry(shape, { depth: T, bevelEnabled: false });
-  const lid = g.groups[0];
-  const side = g.groups[1];
-  g.clearGroups();
-  g.addGroup(lid.start, lid.count / 2, 1);
-  g.addGroup(lid.start + lid.count / 2, lid.count / 2, 0);
-  if (side) g.addGroup(side.start, side.count, 2);
-  return g;
+  for (const h of holes) {
+    if (h === notchR || h === notchL || bottom.includes(h)) continue;
+    const x0 = h.x - h.w / 2;
+    const x1 = h.x + h.w / 2;
+    const y1 = Math.min(h.y + h.h, Math.min(topAt(x0), topAt(x1)) - 0.04);
+    const p = new THREE.Path();
+    p.moveTo(x0, h.y);
+    p.lineTo(x0, y1);
+    p.lineTo(x1, y1);
+    p.lineTo(x1, h.y);
+    p.closePath();
+    shape.holes.push(p);
+  }
+  return splitGroups(new THREE.ExtrudeGeometry(shape, { depth: T, bevelEnabled: false }));
 }
+
+/** Gable infill above a wall: rises from edgeRise at both ends to peakRise at the centre. */
+function gableGeometry(L: number, H0: number, edgeRise: number, peakRise: number, T: number) {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, H0);
+  shape.lineTo(L, H0);
+  if (edgeRise > 0.001) shape.lineTo(L, H0 + edgeRise);
+  shape.lineTo(L / 2, H0 + peakRise);
+  if (edgeRise > 0.001) shape.lineTo(0, H0 + edgeRise);
+  shape.closePath();
+  return splitGroups(new THREE.ExtrudeGeometry(shape, { depth: T, bevelEnabled: false }));
+}
+
+/** Clone a material with its maps tiled at real-world scale (sx × sy metres), optionally rotated 90°. */
+function tiledMaterial(base: THREE.MeshStandardMaterial, sx: number, sy: number, rotate = false) {
+  const m = base.clone();
+  for (const key of ['map', 'bumpMap'] as const) {
+    const t = base[key];
+    if (!t) continue;
+    const c = t.clone();
+    c.center.set(0.5, 0.5);
+    c.rotation = rotate ? Math.PI / 2 : 0;
+    c.repeat.set(rotate ? sy : sx, rotate ? sx : sy);
+    c.needsUpdate = true;
+    m[key] = c;
+  }
+  return m;
+}
+
+const disposeMaterial = (m: THREE.Material) => {
+  const sm = m as THREE.MeshStandardMaterial;
+  sm.map?.dispose();
+  sm.bumpMap?.dispose();
+  m.dispose();
+};
 
 interface WallFrame {
   position: [number, number, number];
   rotationY: number;
   length: number;
   sOffset: number; // subtract from external s to get local x
+  h0: number; // wall height above floor at local x = 0
+  h1: number; // wall height above floor at local x = length
 }
 
 function wallFrames(geo: BuildingGeometry): Record<WallSide, WallFrame> {
   const hx = geo.intW / 2 + geo.wallT;
   const hz = geo.intD / 2 + geo.wallT;
   const t = geo.wallT;
+  const h = (z: number) => geo.wallTopAt(z) - geo.floorH;
+  // Front and back walls take the lower of their two faces so they never poke through a sloped roof.
+  const hf = h(hz - t);
+  const hb = h(-hz);
   return {
-    front: { position: [-hx, geo.floorH, hz - t], rotationY: 0, length: geo.extW, sOffset: 0 },
-    right: { position: [hx - t, geo.floorH, hz - t], rotationY: Math.PI / 2, length: geo.intD, sOffset: t },
-    left: { position: [-(hx - t), geo.floorH, -(hz - t)], rotationY: -Math.PI / 2, length: geo.intD, sOffset: t },
-    back: { position: [hx, geo.floorH, -(hz - t)], rotationY: Math.PI, length: geo.extW, sOffset: 0 },
+    front: { position: [-hx, geo.floorH, hz - t], rotationY: 0, length: geo.extW, sOffset: 0, h0: hf, h1: hf },
+    right: { position: [hx - t, geo.floorH, hz - t], rotationY: Math.PI / 2, length: geo.intD, sOffset: t, h0: h(hz - t), h1: h(-(hz - t)) },
+    left: { position: [-(hx - t), geo.floorH, -(hz - t)], rotationY: -Math.PI / 2, length: geo.intD, sOffset: t, h0: h(-(hz - t)), h1: h(hz - t) },
+    back: { position: [hx, geo.floorH, -(hz - t)], rotationY: Math.PI, length: geo.extW, sOffset: 0, h0: hb, h1: hb },
   };
 }
 
@@ -282,7 +328,7 @@ export function Building({ geo, cfg }: { geo: BuildingGeometry; cfg: DesignConfi
       const holes = geo.openings
         .filter((o) => o.wall === side)
         .map((o) => ({ x: o.s - f.sOffset, y: o.sill, w: o.w, h: o.h }));
-      out[side] = wallGeometry(f.length, geo.wallH, T, holes);
+      out[side] = wallGeometry(f.length, f.h0, f.h1, T, holes);
     });
     return out as Record<WallSide, THREE.BufferGeometry>;
   }, [geo, frames, T]);
@@ -290,72 +336,102 @@ export function Building({ geo, cfg }: { geo: BuildingGeometry; cfg: DesignConfi
 
   const gables = useMemo(() => {
     if (geo.roof.type !== 'apex') return null;
-    const rise = geo.roof.ridgeH - geo.roof.eavesH + 0.05;
-    const sides: WallSide[] = geo.roof.ridgeAxis === 'z' ? ['front', 'back'] : ['left', 'right'];
-    return sides.map((side) => ({ side, g: gableGeometry(frames[side].length, geo.wallH, rise, T) }));
+    const r = geo.roof;
+    const k = Math.tan((r.pitch * Math.PI) / 180);
+    const sides: WallSide[] = r.ridgeAxis === 'z' ? ['front', 'back'] : ['left', 'right'];
+    return sides.map((side) => {
+      const f = frames[side];
+      // Gable top follows the roof underside exactly: zero rise where the wall meets the eaves.
+      const edgeRise = (r.halfSpan - f.length / 2) * k;
+      return { side, g: gableGeometry(f.length, f.h0, edgeRise, r.halfSpan * k, T) };
+    });
   }, [geo, frames, T]);
   useEffect(() => () => gables?.forEach((x) => x.g.dispose()), [gables]);
 
+  // Floor and deck materials tiled to their real size (memoised so textures are not re-cloned every render).
+  const floorMat = useMemo(() => tiledMaterial(mats.floor, geo.intW, geo.intD), [mats.floor, geo.intW, geo.intD]);
+  useEffect(() => () => disposeMaterial(floorMat), [floorMat]);
+  const deckMat = useMemo(() => (geo.deck ? tiledMaterial(mats.deck, geo.deck.width, geo.deck.depth) : null), [mats.deck, geo.deck?.width, geo.deck?.depth]);
+  useEffect(() => () => { if (deckMat) disposeMaterial(deckMat); }, [deckMat]);
+
+  // Partition: built like a side wall so its top follows the ceiling, with a door notch near the front.
+  const partitionGeo = useMemo(() => {
+    if (!geo.partition) return null;
+    const L = geo.intD;
+    const zFront = hz - T;
+    const door = [{ x: 0.575, y: 0, w: 0.85, h: 2.05 }];
+    if (geo.roof.type === 'apex') {
+      const r = geo.roof;
+      const k = Math.tan((r.pitch * Math.PI) / 180);
+      if (r.ridgeAxis === 'z') {
+        const h = r.wallTop + (r.halfSpan - Math.abs(geo.partition.x)) * k - geo.floorH - 0.01;
+        return { wall: wallGeometry(L, h, h, 0.09, door), gable: null };
+      }
+      const h = r.wallTop + T * k - geo.floorH - 0.01;
+      return { wall: wallGeometry(L, h, h, 0.09, door), gable: gableGeometry(L, h, 0, (r.halfSpan - T) * k, 0.09) };
+    }
+    const h0 = geo.wallTopAt(zFront) - geo.floorH - 0.008;
+    const h1 = geo.wallTopAt(-zFront) - geo.floorH - 0.008;
+    return { wall: wallGeometry(L, h0, h1, 0.09, door), gable: null };
+  }, [geo, hz, T]);
+  useEffect(() => () => { partitionGeo?.wall.dispose(); partitionGeo?.gable?.dispose(); }, [partitionGeo]);
+
   const wallMats = (side: WallSide) => [side === 'front' ? mats.frontCladding : mats.cladding, mats.interior, mats.reveal];
+
+  // Roof top material tiled to the real roof size so standing seams keep a 300mm pitch.
+  const roofTop = useMemo(() => {
+    const base = mats.roofTop;
+    if (geo.roof.type === 'pent') {
+      const ov = geo.roof.overhang;
+      return tiledMaterial(base, geo.extW + ov.left + ov.right, geo.roof.slab.len);
+    }
+    const r = geo.roof;
+    const slope = (r.halfSpan + r.overhang) / Math.cos((r.pitch * Math.PI) / 180);
+    const length = (r.ridgeAxis === 'z' ? hz : hx) * 2 + 2 * r.overhang;
+    // Seams run down the slope: along x for a ridge on z, so rotate the pattern.
+    return r.ridgeAxis === 'z' ? tiledMaterial(base, slope, length, true) : tiledMaterial(base, length, slope);
+  }, [mats.roofTop, geo, hx, hz]);
+  useEffect(() => () => disposeMaterial(roofTop), [roofTop]);
 
   // Roof
   let roofNode: JSX.Element | null = null;
-  let gutterY = H - geo.roofT - 0.03;
   if (geo.roof.type === 'pent') {
-    const ov = geo.roof.overhang;
-    const zF = hz + ov.front;
-    const zB = -hz - ov.back;
+    const r = geo.roof;
+    const ov = r.overhang;
     const w = geo.extW + ov.left + ov.right;
-    const len = zF - zB;
-    const topMats = [mats.fascia, mats.fascia, mats.roofTop, mats.soffit, mats.fascia, mats.fascia];
-    if (geo.hood.style === 'allSides') {
-      const fall = geo.roof.fall;
-      const ang = Math.atan2(fall, len);
-      const slabLen = Math.hypot(len, fall);
-      gutterY = H - fall - geo.roofT - 0.02;
-      roofNode = (
-        <group>
-          <mesh position={[(ov.right - ov.left) / 2, H - geo.roofT / 2 - fall / 2, (zF + zB) / 2]} rotation={[-ang, 0, 0]} material={topMats} castShadow receiveShadow>
-            <boxGeometry args={[w, geo.roofT, slabLen]} />
-          </mesh>
-          {mats.sedum && (
-            <mesh position={[(ov.right - ov.left) / 2, H - fall / 2 + 0.035, (zF + zB) / 2]} rotation={[-ang, 0, 0]} material={mats.roofTop} castShadow>
-              <boxGeometry args={[w - 0.1, 0.07, slabLen - 0.1]} />
+    const cx = (ov.right - ov.left) / 2;
+    const topMats = [mats.fascia, mats.fascia, roofTop, mats.soffit, mats.fascia, mats.fascia];
+    const ang = r.slab.ang;
+    roofNode = (
+      <group>
+        <mesh position={[cx, r.slab.yc, r.slab.zc]} rotation={[-ang, 0, 0]} material={topMats} castShadow receiveShadow>
+          <boxGeometry args={[w, geo.roofT, r.slab.len]} />
+        </mesh>
+        {mats.sedum && (
+          // Sedum sits on the slab; its base is 5mm into the roof so the faces never coincide.
+          <group position={[cx, r.slab.yc, r.slab.zc]} rotation={[-ang, 0, 0]}>
+            <mesh position={[0, geo.roofT / 2 + 0.03, 0]} material={roofTop} castShadow>
+              <boxGeometry args={[w - 0.12, 0.07, r.slab.len - 0.12]} />
             </mesh>
-          )}
-        </group>
-      );
-    } else {
-      roofNode = (
-        <group>
-          <mesh position={[(ov.right - ov.left) / 2, H - geo.roofT / 2, (zF + zB) / 2]} material={topMats} castShadow receiveShadow>
-            <boxGeometry args={[w, geo.roofT, len]} />
-          </mesh>
-          {/* hidden pent fall: inner steel deck visible from above */}
-          <mesh position={[0, H - geo.roofT - 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]} material={mats.dark}>
-            <planeGeometry args={[geo.extW - 0.2, geo.extD - 0.2]} />
-          </mesh>
-          {mats.sedum && (
-            <mesh position={[(ov.right - ov.left) / 2, H + 0.035, (zF + zB) / 2]} material={mats.roofTop} castShadow>
-              <boxGeometry args={[w - 0.12, 0.07, len - 0.12]} />
-            </mesh>
-          )}
-        </group>
-      );
-    }
+          </group>
+        )}
+      </group>
+    );
   } else {
     const r = geo.roof;
     const ov = r.overhang;
-    const rise = r.ridgeH - r.eavesH;
-    const halfSpan = (r.ridgeAxis === 'z' ? hx : hz) + ov;
-    const slope = Math.hypot(halfSpan, rise);
-    const ang = Math.atan2(rise, halfSpan);
+    const cos = Math.cos((r.pitch * Math.PI) / 180);
+    const k = Math.tan((r.pitch * Math.PI) / 180);
+    const ang = (r.pitch * Math.PI) / 180;
+    const run = r.halfSpan + ov; // horizontal run from ridge to eave edge
+    const slope = run / cos;
     const length = (r.ridgeAxis === 'z' ? hz : hx) * 2 + 2 * ov;
-    const topMats = [mats.fascia, mats.fascia, mats.roofTop, mats.soffit, mats.fascia, mats.fascia];
+    const topMats = [mats.fascia, mats.fascia, roofTop, mats.soffit, mats.fascia, mats.fascia];
+    // Underside line: y = wallTop + (halfSpan - d) * k. Slab centre sits half a thickness above it.
+    const dc = run / 2;
+    const cy = r.wallTop + (r.halfSpan - dc) * k + geo.roofT / 2 / cos;
     const slab = (sign: number) => {
-      const cx = (sign * halfSpan) / 2;
-      const cy = r.eavesH + rise / 2 - 0.02;
-      const pos: [number, number, number] = r.ridgeAxis === 'z' ? [cx, cy, 0] : [0, cy, cx];
+      const pos: [number, number, number] = r.ridgeAxis === 'z' ? [sign * dc, cy, 0] : [0, cy, sign * dc];
       const rot: [number, number, number] = r.ridgeAxis === 'z' ? [0, 0, -sign * ang] : [sign * ang, 0, 0];
       const size: [number, number, number] = r.ridgeAxis === 'z' ? [slope, geo.roofT, length] : [length, geo.roofT, slope];
       return (
@@ -364,15 +440,31 @@ export function Building({ geo, cfg }: { geo: BuildingGeometry; cfg: DesignConfi
         </mesh>
       );
     };
-    const ridge: [number, number, number] = r.ridgeAxis === 'z' ? [0.16, 0.06, length] : [length, 0.06, 0.16];
+    // White vaulted ceiling just under each slab, inside the walls.
+    const inner = (r.ridgeAxis === 'z' ? geo.intD : geo.intW) + 0.002;
+    const vRun = r.halfSpan;
+    const vault = (sign: number) => {
+      const dcv = vRun / 2;
+      const y = r.wallTop + (r.halfSpan - dcv) * k - 0.006;
+      const pos: [number, number, number] = r.ridgeAxis === 'z' ? [sign * dcv, y, 0] : [0, y, sign * dcv];
+      const rot: [number, number, number] = r.ridgeAxis === 'z' ? [Math.PI / 2, -sign * ang, 0] : [Math.PI / 2 + sign * ang, 0, 0];
+      const size: [number, number] = r.ridgeAxis === 'z' ? [vRun / cos, inner] : [inner, vRun / cos];
+      return (
+        <mesh key={'v' + sign} position={pos} rotation={rot} material={mats.white}>
+          <planeGeometry args={size} />
+        </mesh>
+      );
+    };
+    const ridge: [number, number, number] = r.ridgeAxis === 'z' ? [0.2, 0.07, length] : [length, 0.07, 0.2];
     roofNode = (
       <group>
         {slab(1)}
         {slab(-1)}
-        <Box size={ridge} position={[0, r.ridgeH + 0.02, 0]} material={mats.fascia} />
+        {vault(1)}
+        {vault(-1)}
+        <Box size={ridge} position={[0, r.ridgeH - 0.005, 0]} material={mats.fascia} />
       </group>
     );
-    gutterY = r.eavesH - 0.06;
   }
 
   // Hood / front frame pieces
@@ -441,9 +533,8 @@ export function Building({ geo, cfg }: { geo: BuildingGeometry; cfg: DesignConfi
   // Deck
   const deckNode = geo.deck ? (
     <group>
-      <mesh position={[0, geo.deck.top - 0.015, hz + geo.deck.depth / 2]} castShadow receiveShadow>
+      <mesh position={[0, geo.deck.top - 0.015, hz + geo.deck.depth / 2]} material={deckMat ?? mats.deck} castShadow receiveShadow>
         <boxGeometry args={[geo.deck.width, 0.03, geo.deck.depth]} />
-        <meshStandardMaterial map={repeated(mats.deck.map!, geo.deck.width, geo.deck.depth)} bumpMap={repeated(mats.deck.bumpMap!, geo.deck.width, geo.deck.depth)} bumpScale={1.2} roughness={0.8} />
       </mesh>
       <Box size={[geo.deck.width, Math.max(0.02, geo.deck.top - 0.03 - 0.02), geo.deck.depth - 0.03]} position={[0, (geo.deck.top - 0.03) / 2 + 0.01, hz + geo.deck.depth / 2]} material={mats.plinth} />
       {has('deckLights') &&
@@ -458,30 +549,49 @@ export function Building({ geo, cfg }: { geo: BuildingGeometry; cfg: DesignConfi
   // Rainwater goods
   const rwp: JSX.Element[] = [];
   const pipeR = 0.034;
-  const gutterLen = (wall: WallSide) => (wall === 'front' || wall === 'back' ? geo.extW + 0.5 : geo.intD + 2 * T + 0.5);
+  const gutterLen = (wall: WallSide) => (wall === 'front' || wall === 'back' ? geo.extW + 0.4 : geo.intD + 2 * T + 0.4);
   for (const g of geo.gutters) {
     const len = gutterLen(g.wall);
-    const off = geo.roof.type === 'apex' ? geo.roof.overhang + 0.05 : 0.08;
     const pos: [number, number, number] =
-      g.wall === 'back' ? [0, gutterY, -hz - off] : g.wall === 'front' ? [0, gutterY, hz + off] : g.wall === 'left' ? [-hx - off, gutterY, 0] : [hx + off, gutterY, 0];
+      g.wall === 'back' ? [0, g.y, -hz - g.off] : g.wall === 'front' ? [0, g.y, hz + g.off] : g.wall === 'left' ? [-hx - g.off, g.y, 0] : [hx + g.off, g.y, 0];
     const rot: [number, number, number] = g.wall === 'back' || g.wall === 'front' ? [0, 0, Math.PI / 2] : [Math.PI / 2, 0, 0];
     rwp.push(
       <mesh key={'g' + g.wall} position={pos} rotation={rot} material={mats.dark} castShadow>
-        <cylinderGeometry args={[0.05, 0.05, len, 14]} />
+        <cylinderGeometry args={[0.05, 0.05, len, 16]} />
       </mesh>,
     );
   }
+  const up = new THREE.Vector3(0, 1, 0);
   geo.downpipes.forEach((p, i) => {
+    const gy = geo.gutters[0].y;
+    const neckRise = Math.max(0.12, p.reach * 0.9);
+    const topY = gy - 0.05 - neckRise;
+    const a = new THREE.Vector3(p.x, topY, p.z);
+    const b = new THREE.Vector3(p.x + p.nx * p.reach, gy - 0.04, p.z + p.nz * p.reach);
+    const dir = b.clone().sub(a);
+    const neckLen = dir.length();
+    const q = new THREE.Quaternion().setFromUnitVectors(up, dir.clone().normalize());
+    const mid = a.clone().add(b).multiplyScalar(0.5);
     rwp.push(
       <group key={'dp' + i}>
-        <mesh position={[p.x, (gutterY - 0.1) / 2 + 0.05, p.z]} material={mats.dark} castShadow>
-          <cylinderGeometry args={[pipeR, pipeR, gutterY - 0.1, 12]} />
+        <mesh position={[p.x, topY / 2 + 0.03, p.z]} material={mats.dark} castShadow>
+          <cylinderGeometry args={[pipeR, pipeR, topY - 0.06, 14]} />
         </mesh>
-        <mesh position={[p.x, gutterY - 0.07, p.z]} material={mats.dark}>
-          <sphereGeometry args={[pipeR * 1.15, 12, 12]} />
+        {/* shoe at the base */}
+        <mesh position={[p.x + p.nx * 0.03, 0.06, p.z + p.nz * 0.03]} rotation={p.nx ? [0, 0, -p.nx * 0.6] : [p.nz * 0.6, 0, 0]} material={mats.dark}>
+          <cylinderGeometry args={[pipeR, pipeR * 1.1, 0.1, 14]} />
         </mesh>
-        <Box size={[0.09, 0.03, 0.09]} position={[p.x, 0.5, p.z]} material={mats.dark} />
-        <Box size={[0.09, 0.03, 0.09]} position={[p.x, gutterY - 0.6, p.z]} material={mats.dark} />
+        {neckLen > 0.02 && (
+          <mesh position={mid.toArray() as [number, number, number]} quaternion={q} material={mats.dark} castShadow>
+            <cylinderGeometry args={[pipeR, pipeR, neckLen + 0.03, 14]} />
+          </mesh>
+        )}
+        <mesh position={[p.x, topY, p.z]} material={mats.dark}>
+          <sphereGeometry args={[pipeR, 14, 10]} />
+        </mesh>
+        {[0.55, Math.max(0.9, topY - 0.35)].map((y) => (
+          <Box key={y} size={[p.nx ? 0.07 : 0.1, 0.035, p.nz ? 0.07 : 0.1]} position={[p.x - p.nx * 0.025, y, p.z - p.nz * 0.025]} material={mats.dark} />
+        ))}
       </group>,
     );
   });
@@ -536,104 +646,139 @@ export function Building({ geo, cfg }: { geo: BuildingGeometry; cfg: DesignConfi
     fittings.push(
       <group key="hl">
         {Array.from({ length: Math.max(2, Math.floor(geo.extW / 0.9)) }).map((_, i, arr) => (
-          <mesh key={i} position={[-geo.extW / 2 + ((i + 0.5) * geo.extW) / arr.length, H - geo.roofT - 0.003, hz + hd / 2]} rotation={[Math.PI / 2, 0, 0]} material={mats.emissive}>
+          <mesh key={i} position={[-geo.extW / 2 + ((i + 0.5) * geo.extW) / arr.length, geo.wallTopAt(hz + hd / 2) - 0.003, hz + hd / 2]} rotation={[Math.PI / 2, 0, 0]} material={mats.emissive}>
             <circleGeometry args={[0.035, 16]} />
           </mesh>
         ))}
       </group>,
     );
   if (has('solar')) {
-    const n = Math.max(1, Math.min(4, Math.floor((geo.extW - 0.6) / 1.1)));
-    const isPent = geo.roof.type === 'pent';
-    const sloped = isPent && geo.hood.style === 'allSides';
-    const fall = geo.roof.type === 'pent' ? geo.roof.fall : 0;
-    const ang = sloped ? Math.atan2(fall, geo.extD + 0.3) : 0;
-    fittings.push(
-      <group key="solar">
-        {Array.from({ length: n }).map((_, i) => {
-          const x = -((n - 1) * 1.1) / 2 + i * 1.1;
-          if (geo.roof.type === 'apex') {
-            const r = geo.roof;
-            const rise = r.ridgeH - r.eavesH;
-            const half = (r.ridgeAxis === 'z' ? hx : hz) + r.overhang;
-            const a = Math.atan2(rise, half);
-            const d = half * 0.5;
-            const yy = r.eavesH + rise * 0.5 + 0.1;
-            const pos: [number, number, number] = r.ridgeAxis === 'z' ? [-d, yy, x] : [x, yy, d];
-            const rot: [number, number, number] = r.ridgeAxis === 'z' ? [0, 0, -a] : [a, 0, 0];
-            return <Box key={i} size={r.ridgeAxis === 'z' ? [1.7, 0.04, 1.0] : [1.0, 0.04, 1.7]} position={pos} rotation={rot} material={mats.solar} />;
-          }
-          return <Box key={i} size={[1.0, 0.04, 1.7]} position={[x, H + 0.03 + 0.12 - (sloped ? fall * 0.5 : 0), 0]} rotation={[-ang, 0, 0]} material={mats.solar} />;
-        })}
-      </group>,
-    );
+    const panels: JSX.Element[] = [];
+    if (geo.roof.type === 'apex') {
+      const r = geo.roof;
+      const a = (r.pitch * Math.PI) / 180;
+      const k = Math.tan(a);
+      const along = (r.ridgeAxis === 'z' ? hz : hx) * 2;
+      const n = Math.max(1, Math.min(4, Math.floor((along - 0.4) / 1.1)));
+      const d = (r.halfSpan + r.overhang) * 0.5;
+      const y = r.wallTop + (r.halfSpan - d) * k + geo.roofT / Math.cos(a) + 0.04 / Math.cos(a);
+      for (let i = 0; i < n; i++) {
+        const t = -((n - 1) * 1.1) / 2 + i * 1.1;
+        panels.push(
+          r.ridgeAxis === 'z' ? (
+            <Box key={i} size={[1.7, 0.04, 1.0]} position={[d, y, t]} rotation={[0, 0, -a]} material={mats.solar} />
+          ) : (
+            <Box key={i} size={[1.0, 0.04, 1.7]} position={[t, y, d]} rotation={[a, 0, 0]} material={mats.solar} />
+          ),
+        );
+      }
+    } else {
+      const r = geo.roof;
+      const n = Math.max(1, Math.min(4, Math.floor((geo.extW - 0.6) / 1.1)));
+      const lift = geo.roofT / 2 + (mats.sedum ? 0.12 : 0.06);
+      for (let i = 0; i < n; i++) {
+        const x = -((n - 1) * 1.1) / 2 + i * 1.1;
+        panels.push(<Box key={i} size={[1.0, 0.04, 1.7]} position={[x, lift, 0]} material={mats.solar} />);
+      }
+      fittings.push(
+        <group key="solar" position={[0, r.slab.yc, r.slab.zc]} rotation={[-r.slab.ang, 0, 0]}>
+          {panels}
+        </group>,
+      );
+    }
+    if (geo.roof.type === 'apex') fittings.push(<group key="solar">{panels}</group>);
   }
 
   // Interior
   const interior: JSX.Element[] = [];
-  const ceilY = geo.floorH + geo.wallH - 0.005;
-  interior.push(
-    <mesh key="floor" position={[0, geo.floorH - 0.01, 0]} receiveShadow>
-      <boxGeometry args={[geo.intW, 0.02, geo.intD]} />
-      <meshStandardMaterial map={repeated(mats.floor.map!, geo.intW, geo.intD)} bumpMap={repeated(mats.floor.bumpMap!, geo.intW, geo.intD)} bumpScale={0.5} roughness={mats.floor.roughness} />
-    </mesh>,
-    <mesh key="ceil" position={[0, ceilY, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.white}>
-      <planeGeometry args={[geo.intW, geo.intD]} />
-    </mesh>,
-    <pointLight key="pl" position={[0, ceilY - 0.3, 0]} intensity={geo.intW * 1.2} distance={12} decay={2} color="#fff1dc" />,
-  );
-  if (has('ledPanel')) interior.push(<Box key="led" size={[0.6, 0.012, 0.6]} position={[0, ceilY - 0.006, 0]} material={mats.emissive} castShadow={false} />);
-  if (has('halo'))
-    interior.push(
-      <group key="halo">
-        <Box size={[geo.intW - 0.5, 0.12, geo.intD - 0.5]} position={[0, ceilY - 0.06, 0]} material={mats.white} castShadow={false} />
-        <mesh position={[0, ceilY - 0.125, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.emissive}>
-          <torusGeometry args={[Math.min(geo.intW, geo.intD) * 0.22, 0.02, 10, 48]} />
-        </mesh>
-      </group>,
+  const isApex = geo.roof.type === 'apex';
+  let ceilY: number;
+  let ceilRotY = 0;
+  let alongX = geo.intW; // span of ceiling fittings along the group's local x
+  let acrossZ = geo.intD; // span along local z (0 = fittings sit on a single line, e.g. a ridge)
+  let ridgeLift = 0; // apex only: how far above the fitting plane the ridge underside sits
+  if (geo.roof.type === 'apex') {
+    const r = geo.roof;
+    const k = Math.tan((r.pitch * Math.PI) / 180);
+    // Fittings hang at the height of the vault 350mm out from the ridge so a 600mm panel clears both slopes.
+    ceilY = r.wallTop + (r.halfSpan - 0.35) * k - 0.02;
+    ridgeLift = 0.35 * k + 0.016;
+    ceilRotY = r.ridgeAxis === 'z' ? Math.PI / 2 : 0;
+    alongX = r.ridgeAxis === 'z' ? geo.intD : geo.intW;
+    acrossZ = 0;
+  } else {
+    ceilY = geo.wallTopAt(0) - 0.006;
+  }
+  const tilt = geo.ceilingTilt;
+  const ceiling: JSX.Element[] = [];
+  if (!isApex)
+    ceiling.push(
+      <mesh key="ceil" rotation={[Math.PI / 2, 0, 0]} material={mats.white}>
+        <planeGeometry args={[geo.intW + 0.002, geo.intD / Math.cos(tilt) + 0.002]} />
+      </mesh>,
     );
-  if (has('recessedSpots') || has('halo'))
-    interior.push(
+  ceiling.push(<pointLight key="pl" position={[0, -0.35, 0]} intensity={geo.intW * 1.2} distance={12} decay={2} color="#fff1dc" />);
+  if (has('ledPanel')) ceiling.push(<Box key="led" size={[0.6, 0.012, 0.6]} position={[0, -0.009, 0]} material={mats.emissive} castShadow={false} />);
+  if (has('halo')) {
+    if (!isApex) ceiling.push(<Box key="halobox" size={[geo.intW - 0.5, 0.12, geo.intD - 0.5]} position={[0, -0.062, 0]} material={mats.white} castShadow={false} />);
+    ceiling.push(
+      <mesh key="ring" position={[0, isApex ? -0.12 : -0.127, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.emissive}>
+        <torusGeometry args={[isApex ? 0.3 : Math.min(geo.intW, geo.intD) * 0.22, 0.02, 10, 48]} />
+      </mesh>,
+    );
+  }
+  if (has('recessedSpots') || has('halo')) {
+    // Spots sit flush with the ceiling; on an apex they run along the ridge.
+    const y = has('halo') && !isApex ? -0.127 : ridgeLift - 0.004;
+    const pts: [number, number][] = acrossZ > 0 ? [[-1, -1], [-1, 1], [1, -1], [1, 1]] : [[-1.2, 0], [-0.4, 0], [0.4, 0], [1.2, 0]];
+    ceiling.push(
       <group key="spots">
-        {[-1, 1].flatMap((a) =>
-          [-1, 1].map((b) => (
-            <mesh key={a + ':' + b} position={[a * geo.intW * 0.3, ceilY - (has('halo') ? 0.125 : 0.003), b * geo.intD * 0.3]} rotation={[Math.PI / 2, 0, 0]} material={mats.emissive}>
-              <circleGeometry args={[0.04, 16]} />
-            </mesh>
-          )),
-        )}
+        {pts.map(([a, b]) => (
+          <mesh key={a + ':' + b} position={[a * alongX * 0.3, y, b * acrossZ * 0.3]} rotation={[Math.PI / 2, 0, 0]} material={mats.emissive}>
+            <circleGeometry args={[0.04, 16]} />
+          </mesh>
+        ))}
       </group>,
     );
-  if (has('trackLights'))
-    interior.push(
+  }
+  if (has('trackLights')) {
+    const tl = Math.min(1.6, alongX - 0.6);
+    ceiling.push(
       <group key="track">
-        <Box size={[Math.min(1.6, geo.intW - 0.6), 0.03, 0.04]} position={[0, ceilY - 0.02, 0]} material={mats.dark} castShadow={false} />
+        <Box size={[tl, 0.03, 0.04]} position={[0, -0.02, 0]} material={mats.dark} castShadow={false} />
         {[-0.6, -0.2, 0.2, 0.6].map((x) => (
-          <mesh key={x} position={[x * Math.min(1.6, geo.intW - 0.6) * 0.6, ceilY - 0.09, 0]} material={mats.dark}>
+          <mesh key={x} position={[x * tl * 0.6, -0.09, 0]} material={mats.dark}>
             <cylinderGeometry args={[0.035, 0.03, 0.1, 12]} />
           </mesh>
         ))}
       </group>,
     );
-  if (has('upDownLights'))
-    [-1, 1].forEach((s) => interior.push(<Box key={'ud' + s} size={[0.08, 0.2, 0.08]} position={[s * (geo.intW / 2 - 0.5), geo.floorH + 1.9, -hz + T + 0.04]} material={mats.dark} castShadow={false} />));
+  }
   if (has('circularLight'))
-    interior.push(
-      <mesh key="circ" position={[0, ceilY - 0.03, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.dark}>
+    ceiling.push(
+      <mesh key="circ" position={[0, -0.04, 0]} rotation={[Math.PI / 2, 0, 0]} material={mats.dark}>
         <torusGeometry args={[0.3, 0.025, 10, 40]} />
       </mesh>,
     );
+  interior.push(
+    <mesh key="floor" position={[0, geo.floorH - 0.01, 0]} material={floorMat} receiveShadow>
+      <boxGeometry args={[geo.intW, 0.02, geo.intD]} />
+    </mesh>,
+    <group key="ceiling" position={[0, ceilY, 0]} rotation={[-tilt, ceilRotY, 0]}>
+      {ceiling}
+    </group>,
+  );
+  if (has('upDownLights'))
+    [-1, 1].forEach((s) => interior.push(<Box key={'ud' + s} size={[0.08, 0.2, 0.08]} position={[s * (geo.intW / 2 - 0.5), geo.floorH + 1.9, -hz + T + 0.045]} material={mats.dark} castShadow={false} />));
   if (has('radiator') || has('radiator2kw')) interior.push(<Box key="rad" size={[0.9, 0.55, 0.07]} position={[-geo.intW * 0.25, geo.floorH + 0.42, -hz + T + 0.04]} material={mats.white} castShadow={false} />);
-  if (geo.partition) {
+  if (partitionGeo && geo.partition) {
     const px = geo.partition.x;
-    const gapZ0 = hz - T - 0.15 - 0.85;
-    const len0 = gapZ0 - (-hz + T);
     interior.push(
-      <group key="part">
-        <Box size={[0.09, geo.wallH, len0]} position={[px, geo.floorH + geo.wallH / 2, -hz + T + len0 / 2]} material={mats.interior} />
-        <Box size={[0.09, geo.wallH, 0.15]} position={[px, geo.floorH + geo.wallH / 2, hz - T - 0.075]} material={mats.interior} />
-        <Box size={[0.09, geo.wallH - 2.05, 0.85]} position={[px, geo.floorH + 2.05 + (geo.wallH - 2.05) / 2, gapZ0 + 0.425]} material={mats.interior} />
-        <Box size={[0.04, 2.0, 0.78]} position={[px + 0.045, geo.floorH + 1.0, gapZ0 + 0.425]} material={mats.white} />
+      <group key="part" position={[px - 0.045, geo.floorH, hz - T]} rotation={[0, Math.PI / 2, 0]}>
+        <mesh geometry={partitionGeo.wall} material={[mats.interior, mats.interior, mats.interior]} castShadow receiveShadow />
+        {partitionGeo.gable && <mesh geometry={partitionGeo.gable} material={[mats.interior, mats.interior, mats.interior]} castShadow receiveShadow />}
+        {/* internal door leaf, set within the partition thickness */}
+        <Box size={[0.78, 2.0, 0.04]} position={[0.575, 1.002, 0.045]} material={mats.white} castShadow={false} />
       </group>,
     );
   }
@@ -641,7 +786,8 @@ export function Building({ geo, cfg }: { geo: BuildingGeometry; cfg: DesignConfi
   return (
     <group>
       {/* plinth / base */}
-      <Box size={[geo.extW - 0.12, geo.floorH, geo.intD + 2 * T - 0.12]} position={[0, geo.floorH / 2, 0]} material={mats.plinth} />
+      {/* plinth / base: stops 30mm below the floor so their top faces never coincide */}
+      <Box size={[geo.extW - 0.12, geo.floorH - 0.03, geo.intD + 2 * T - 0.12]} position={[0, (geo.floorH - 0.03) / 2, 0]} material={mats.plinth} />
       {/* walls and openings */}
       {(['front', 'back', 'left', 'right'] as WallSide[]).map((side) => {
         const f = frames[side];

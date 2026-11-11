@@ -8,13 +8,22 @@ import { computePrice, gbp } from '../model/pricing';
 import { encodeConfig, useStore, type Category } from '../model/store';
 import { Chips, Section, Slider, Swatches, Toggle, claddingStyle } from './controls';
 
-const CATS: { id: Category; label: string }[] = [
-  { id: 'size', label: 'Size' },
-  { id: 'exterior', label: 'Exterior' },
-  { id: 'openings', label: 'Doors & windows' },
-  { id: 'interior', label: 'Interior' },
-  { id: 'electrics', label: 'Electrics & packs' },
-  { id: 'summary', label: 'Summary' },
+const ICON: Record<Category, JSX.Element> = {
+  size: <path d="M3 9V3h6M21 15v6h-6M3 3l7 7M21 21l-7-7" />,
+  exterior: <path d="M3 11 12 4l9 7M5 10v10h14V10M10 20v-6h4v6" />,
+  openings: <path d="M5 21V3h14v18M5 21h14M12 3v18M14.5 12h1" />,
+  interior: <path d="M4 18v-5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v5M4 18h16M6 18v2M18 18v2M7 11V8a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3" />,
+  electrics: <path d="M13 2 5 14h6l-1 8 8-12h-6z" />,
+  summary: <path d="M7 3h10v18H7zM10 8h4M10 12h4M10 16h2" />,
+};
+
+const CATS: { id: Category; label: string; title: string }[] = [
+  { id: 'size', label: 'Size', title: 'Size' },
+  { id: 'exterior', label: 'Exterior', title: 'Exterior' },
+  { id: 'openings', label: 'Doors & windows', title: 'Doors & windows' },
+  { id: 'interior', label: 'Interior', title: 'Interior' },
+  { id: 'electrics', label: 'Electrics', title: 'Electrics & packs' },
+  { id: 'summary', label: 'Summary', title: 'Summary' },
 ];
 
 export function Designer({ cfg, geo }: { cfg: DesignConfig; geo: BuildingGeometry }) {
@@ -23,10 +32,13 @@ export function Designer({ cfg, geo }: { cfg: DesignConfig; geo: BuildingGeometr
   const model = modelById(cfg.modelId);
   return (
     <div className="designer">
-      <nav className="cats">
+      <nav className="cats" role="tablist">
         {CATS.map((c) => (
-          <button key={c.id} type="button" className={category === c.id ? 'on' : ''} onClick={() => setCategory(c.id)}>
-            {c.label}
+          <button key={c.id} type="button" role="tab" aria-selected={category === c.id} title={c.title} className={category === c.id ? 'on' : ''} onClick={() => setCategory(c.id)}>
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+              {ICON[c.id]}
+            </svg>
+            <span>{c.label}</span>
           </button>
         ))}
       </nav>
@@ -72,14 +84,19 @@ function SizePanel({ cfg, geo }: { cfg: DesignConfig; geo: BuildingGeometry }) {
       <Section title="Footprint" hint={`${grid.prices.length} sizes available. Internal sizes shown; external in brackets.`}>
         <Slider label="Width" value={wi} min={0} max={widths.length - 1} step={1} onChange={(i) => setSize(widths[i], cfg.depth)} format={(i) => `${widths[i].toFixed(2)}m  (${ext(grid.widths, widths[i]).toFixed(2)}m ext)`} />
         <Slider label="Depth" value={di} min={0} max={depths.length - 1} step={1} onChange={(i) => setSize(cfg.width, depths[i])} format={(i) => `${depths[i].toFixed(2)}m  (${ext(grid.depths, depths[i]).toFixed(2)}m ext)`} />
-        <div className="size-grid" style={{ gridTemplateColumns: `auto repeat(${widths.length}, 1fr)` }}>
+        <p className="lbl sg-cap">
+          <span>Width (m) →</span>
+          <span>↓ Depth (m)</span>
+        </p>
+        <div className="size-grid" style={{ gridTemplateColumns: `28px repeat(${widths.length}, minmax(0, 1fr))` }}>
           <span />
-          {widths.map((w) => (
-            <span key={w} className="sg-h">{w.toFixed(1)}</span>
+          {widths.map((w, i) => (
+            // Only label every nth column so the numbers never run into each other.
+            <span key={w} className="sg-h">{i % Math.ceil(widths.length / 7) === 0 ? w.toFixed(1) : ''}</span>
           ))}
-          {depths.map((d) => (
+          {depths.map((d, ri) => (
             <div key={d} className="sg-row" style={{ display: 'contents' }}>
-              <span className="sg-h">{d.toFixed(1)}</span>
+              <span className="sg-h sg-rh">{ri % Math.ceil(depths.length / 8) === 0 ? d.toFixed(1) : ''}</span>
               {widths.map((w) => {
                 const ok = isSizeAvailable(grid, w, d);
                 const on = Math.abs(w - cfg.width) < 1e-6 && Math.abs(d - cfg.depth) < 1e-6;
@@ -140,10 +157,11 @@ function ExteriorPanel({ cfg, geo }: { cfg: DesignConfig; geo: BuildingGeometry 
         )}
       </Section>
       <Section title="Trim colours" hint="Fascia & hood, plus door and window frames.">
-        <div className="two">
+        <div>
           <div>
             <p className="lbl">Fascia & hood</p>
             <Swatches
+              compact
               options={FASCIA_COLOURS.filter((c) => (model.range === 'x1' ? c.id !== 'natural' : c.id !== 'copper')).map((c) => ({ id: c.id, label: c.name, style: c.id === 'natural' ? claddingStyle(c.hex, 'vertical') : { background: c.hex } }))}
               value={cfg.fascia}
               onChange={(id) => patch({ fascia: id, stylePack: null })}
@@ -151,7 +169,7 @@ function ExteriorPanel({ cfg, geo }: { cfg: DesignConfig; geo: BuildingGeometry 
           </div>
           <div>
             <p className="lbl">Doors & windows</p>
-            <Swatches options={FRAME_COLOURS.map((c) => ({ id: c.id, label: c.name, style: { background: c.hex } }))} value={cfg.frame} onChange={(id) => patch({ frame: id, stylePack: null })} />
+            <Swatches compact options={FRAME_COLOURS.map((c) => ({ id: c.id, label: c.name, style: { background: c.hex } }))} value={cfg.frame} onChange={(id) => patch({ frame: id, stylePack: null })} />
           </div>
         </div>
       </Section>

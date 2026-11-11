@@ -59,17 +59,30 @@ export interface BuildingGeometry {
   extD: number;
   wallT: number;
   floorH: number; // top of internal floor above ground
-  wallH: number; // internal wall height at the front
+  wallH: number; // wall height above the floor at the front wall (highest point of a pent)
+  /** world y of the wall top / roof underside at world z (pent roofs slope front to back) */
+  wallTopAt: (z: number) => number;
+  /** slope of the ceiling about the x axis (radians, front higher); 0 for flat */
+  ceilingTilt: number;
   extHeight: number;
   roofT: number;
   roof:
-    | { type: 'pent'; fall: number; overhang: { front: number; back: number; left: number; right: number } }
-    | { type: 'apex'; pitch: number; ridgeAxis: 'x' | 'z'; eavesH: number; ridgeH: number; overhang: number };
+    | {
+        type: 'pent';
+        fall: number;
+        sloped: boolean; // visible slope (all-sides hood) vs hidden fall behind a parapet
+        overhang: { front: number; back: number; left: number; right: number };
+        /** roof slab centre and angle (only meaningful when sloped) */
+        slab: { yc: number; zc: number; len: number; ang: number };
+      }
+    | { type: 'apex'; pitch: number; ridgeAxis: 'x' | 'z'; eavesH: number; ridgeH: number; overhang: number; wallTop: number; halfSpan: number };
   hood: { style: ModelSpec['hood']; depth: number; cheeks: 'none' | 'both' | 'right'; frameT: number };
   deck: { depth: number; width: number; top: number; boards: number } | null;
   openings: Opening[];
-  downpipes: { x: number; z: number }[];
-  gutters: { wall: WallSide; y: number }[];
+  /** pipe centre (x,z) 60mm off the wall; (nx,nz) outward normal; reach = horizontal swan-neck run to the gutter */
+  downpipes: { x: number; z: number; nx: number; nz: number; reach: number }[];
+  /** gutter centre line: y, and distance of its centre outside the wall face */
+  gutters: { wall: WallSide; y: number; off: number }[];
   partition: { x: number } | null;
   sideScreen: { side: 'left' | 'right'; depth: number } | null;
   floorArea: number;
@@ -138,27 +151,55 @@ export function computeGeometry(cfg: DesignConfig): BuildingGeometry {
   const frameT = model.range === 'x1' ? 0.18 : 0.14;
 
   // Roof
+  const hx0 = intW / 2 + wallT;
+  const hz0 = intD / 2 + wallT;
   let roof: BuildingGeometry['roof'];
-  let wallH: number;
+  let wallTopAt: (z: number) => number;
+  let ceilingTilt = 0;
   if (model.roof === 'pent') {
     const fall = Math.min(0.22, 0.045 * (intD + 2 * wallT));
-    wallH = extHeight - floorH - roofT;
-    const ov =
-      model.hood === 'allSides'
-        ? { front: hoodDepth, back: 0.18, left: 0.22, right: 0.22 }
-        : model.hood === 'none'
-          ? { front: hoodDepth, back: 0.04, left: 0.04, right: 0.04 }
-          : { front: hoodDepth, back: 0.05, left: 0.05, right: 0.05 };
-    roof = { type: 'pent', fall, overhang: ov };
+    const sloped = model.hood === 'allSides';
+    const ov = sloped
+      ? { front: hoodDepth, back: 0.18, left: 0.22, right: 0.22 }
+      : model.hood === 'none'
+        ? { front: hoodDepth, back: 0.04, left: 0.04, right: 0.04 }
+        : { front: hoodDepth, back: 0.05, left: 0.05, right: 0.05 };
+    const zF = hz0 + ov.front;
+    const zB = -hz0 - ov.back;
+    const len = zF - zB;
+    const ang = sloped ? Math.atan2(fall, len) : 0;
+    const slab = { yc: extHeight - roofT / 2 - (sloped ? fall / 2 : 0), zc: (zF + zB) / 2, len: Math.hypot(len, sloped ? fall : 0), ang };
+    if (sloped) {
+      // Underside of the rotated slab: centre line minus half the thickness measured vertically.
+      const k = Math.tan(ang);
+      const half = roofT / 2 / Math.cos(ang);
+      wallTopAt = (z) => slab.yc + k * (z - slab.zc) - half;
+      ceilingTilt = ang;
+    } else {
+      wallTopAt = () => extHeight - roofT;
+    }
+    roof = { type: 'pent', fall, sloped, overhang: ov, slab };
   } else {
     const pitch = model.apexPitch ?? 25;
     const ridgeAxis: 'x' | 'z' = cfg.orientation === 'gable' ? 'z' : 'x';
-    const span = ridgeAxis === 'z' ? extW : extD;
+    const halfSpan = ridgeAxis === 'z' ? hx0 : hz0;
+    const k = Math.tan((pitch * Math.PI) / 180);
+    const wallTop = extHeight - 0.05;
     const eavesH = extHeight;
-    const ridgeH = eavesH + (span / 2) * Math.tan((pitch * Math.PI) / 180);
-    wallH = eavesH - floorH - 0.05;
-    roof = { type: 'apex', pitch, ridgeAxis, eavesH, ridgeH, overhang: Math.max(0.2, Math.min(0.35, extraDepth / 2)) };
+    // The roof slabs rest on the eaves walls; their underside meets the gable tops exactly.
+    const ridgeH = wallTop + halfSpan * k + roofT / Math.cos((pitch * Math.PI) / 180);
+    wallTopAt = () => wallTop;
+    roof = { type: 'apex', pitch, ridgeAxis, eavesH, ridgeH, overhang: Math.max(0.2, Math.min(0.35, extraDepth / 2)), wallTop, halfSpan };
   }
+  const wallH = wallTopAt(hz0 - wallT) - floorH;
+  /** usable height above floor for an opening on a wall, at its lowest point */
+  const heightFor = (wall: WallSide, s: number, w: number) => {
+    if (wall === 'front') return wallTopAt(hz0 - wallT) - floorH;
+    if (wall === 'back') return wallTopAt(-hz0) - floorH;
+    const zA = wall === 'right' ? hz0 - (s - w / 2) : -hz0 + (s - w / 2);
+    const zB2 = wall === 'right' ? hz0 - (s + w / 2) : -hz0 + (s + w / 2);
+    return Math.min(wallTopAt(zA), wallTopAt(zB2)) - floorH;
+  };
 
   // Deck
   let deck: BuildingGeometry['deck'] = null;
@@ -203,21 +244,22 @@ export function computeGeometry(cfg: DesignConfig): BuildingGeometry {
   const margin = 0.2;
   const dw = Math.min(door.width, frontL - 2 * margin);
   const doorS = clamp(cfg.door.at * frontL, margin + dw / 2, frontL - margin - dw / 2);
-  openings.push({ id: 'door', kind: 'door', wall: 'front', type: door.id, s: doorS, w: dw, h: Math.min(door.height, wallH - 0.08), sill: 0, leaves: door.leaves, doorKind: door.kind });
+  openings.push({ id: 'door', kind: 'door', wall: 'front', type: door.id, s: doorS, w: dw, h: Math.min(door.height, heightFor('front', doorS, dw) - 0.08), sill: 0, leaves: door.leaves, doorKind: door.kind });
 
   const placed: Opening[] = [openings[0]];
   const overlaps = (a: { wall: WallSide; s: number; w: number }, b: { wall: WallSide; s: number; w: number }) =>
     a.wall === b.wall && Math.abs(a.s - b.s) < a.w / 2 + b.w / 2 + 0.1;
+  // Fixed-position windows (corner) are placed first so movable ones nudge around them.
   const allWindows: WindowPlacement[] = [
     ...model.standardWindows.map((w, i) => ({ id: `std${i}`, ...w })),
     ...cfg.windows,
-  ];
+  ].sort((a, b) => Number(!!WINDOWS[b.type]?.corner) - Number(!!WINDOWS[a.type]?.corner));
   for (const wp of allWindows) {
     const spec = WINDOWS[wp.type];
     if (!spec) continue;
     if (spec.corner) {
       // Corner window wraps the front-right corner: a pane on the front and one on the right wall.
-      const h = Math.min(spec.height, wallH - 0.1);
+      const h = Math.min(spec.height, heightFor('right', wallT, spec.width) - spec.sill - 0.08);
       const f: Opening = { id: wp.id + 'f', kind: 'window', wall: 'front', type: spec.id, s: frontL - wallT - spec.width / 2, w: spec.width, h, sill: spec.sill, corner: true, leaves: 1 };
       const r: Opening = { id: wp.id + 'r', kind: 'window', wall: 'right', type: spec.id, s: wallT + spec.width / 2, w: spec.width, h, sill: spec.sill, corner: true, leaves: 1 };
       if (placed.some((o) => overlaps(o, f) || overlaps(o, r))) continue; // no room next to the door
@@ -237,26 +279,34 @@ export function computeGeometry(cfg: DesignConfig): BuildingGeometry {
       s = clamp(s, margin + w / 2, L - margin - w / 2);
     }
     if (placed.some((o) => overlaps(o, { wall: wp.wall, s, w }))) continue;
-    const o: Opening = { id: wp.id, kind: 'window', wall: wp.wall, type: spec.id, s, w, h: Math.min(spec.height, wallH - 0.1), sill: spec.sill, leaves: 1, opening: spec.opening };
+    const o: Opening = { id: wp.id, kind: 'window', wall: wp.wall, type: spec.id, s, w, h: Math.min(spec.height, heightFor(wp.wall, s, w) - spec.sill - 0.08), sill: spec.sill, leaves: 1, opening: spec.opening };
     openings.push(o);
     placed.push(o);
   }
 
   // Rainwater: pent roofs fall to the back; apex roofs drain at both eaves.
+  // The gutter hangs just inside the drip edge; the downpipe hugs the wall and a swan neck joins them.
   const hx = intW / 2 + wallT;
   const hz = intD / 2 + wallT;
-  const downpipes: { x: number; z: number }[] = [];
-  const gutters: { wall: WallSide; y: number }[] = [];
+  const PIPE_OFF = 0.06;
+  const downpipes: BuildingGeometry['downpipes'] = [];
+  const gutters: BuildingGeometry['gutters'] = [];
   if (roof.type === 'pent') {
-    gutters.push({ wall: 'back', y: extHeight - roof.fall - 0.05 });
-    downpipes.push({ x: -hx + 0.08, z: -hz - 0.08 });
-    if (extW > 6) downpipes.push({ x: hx - 0.08, z: -hz - 0.08 });
-  } else if (roof.ridgeAxis === 'z') {
-    gutters.push({ wall: 'left', y: roof.eavesH - 0.05 }, { wall: 'right', y: roof.eavesH - 0.05 });
-    downpipes.push({ x: -hx - 0.08, z: -hz + 0.08 }, { x: hx + 0.08, z: -hz + 0.08 });
+    const off = Math.max(roof.overhang.back - 0.03, 0.08);
+    const y = (roof.sloped ? wallTopAt(-hz - off) : extHeight - roofT) - 0.05;
+    gutters.push({ wall: 'back', y, off });
+    downpipes.push({ x: -hx + 0.12, z: -hz - PIPE_OFF, nx: 0, nz: -1, reach: off - PIPE_OFF });
+    if (extW > 6) downpipes.push({ x: hx - 0.12, z: -hz - PIPE_OFF, nx: 0, nz: -1, reach: off - PIPE_OFF });
   } else {
-    gutters.push({ wall: 'front', y: roof.eavesH - 0.05 }, { wall: 'back', y: roof.eavesH - 0.05 });
-    downpipes.push({ x: -hx + 0.08, z: -hz - 0.08 }, { x: -hx + 0.08, z: hz + 0.08 });
+    const off = Math.max(roof.overhang - 0.04, 0.08);
+    const y = roof.wallTop - off * Math.tan((roof.pitch * Math.PI) / 180) - 0.06;
+    if (roof.ridgeAxis === 'z') {
+      gutters.push({ wall: 'left', y, off }, { wall: 'right', y, off });
+      downpipes.push({ x: -hx - PIPE_OFF, z: -hz + 0.12, nx: -1, nz: 0, reach: off - PIPE_OFF }, { x: hx + PIPE_OFF, z: -hz + 0.12, nx: 1, nz: 0, reach: off - PIPE_OFF });
+    } else {
+      gutters.push({ wall: 'front', y, off }, { wall: 'back', y, off });
+      downpipes.push({ x: -hx + 0.12, z: -hz - PIPE_OFF, nx: 0, nz: -1, reach: off - PIPE_OFF }, { x: -hx + 0.12, z: hz + PIPE_OFF, nx: 0, nz: 1, reach: off - PIPE_OFF });
+    }
   }
 
   const partition = cfg.features.includes('partition') ? { x: -intW / 2 + clamp(cfg.partitionAt, 0.15, 0.85) * intW } : null;
@@ -264,7 +314,7 @@ export function computeGeometry(cfg: DesignConfig): BuildingGeometry {
   const sideScreen = hasScreen && model.sideScreen ? { side: cfg.sideScreenSide, depth: Math.max(1.0, deck ? deck.depth : 0, hoodDepth) } : null;
 
   return {
-    model, intW, intD, extW, extD, wallT, floorH, wallH, extHeight, roofT, roof,
+    model, intW, intD, extW, extD, wallT, floorH, wallH, wallTopAt, ceilingTilt, extHeight, roofT, roof,
     hood: { style: model.hood, depth: hoodDepth, cheeks, frameT },
     deck, openings, downpipes, gutters, partition, sideScreen,
     floorArea: +(intW * intD).toFixed(2),
