@@ -224,9 +224,10 @@ p { margin: 0; }
   .topbar { gap: 12px; padding: 0 12px; }
   .crumbs { display: none; }
   .panel { width: 100%; flex: 0 0 100%; position: absolute; inset: 0; z-index: 6; }
-  .panel.closed { margin-left: 0; transform: translateY(calc(100% - 92px)); }
+  .panel.closed { margin-left: 0; top: auto; bottom: 0; height: auto; border-top: 1px solid var(--line); box-shadow: 0 -8px 24px rgba(0,0,0,0.08); }
   .panel-tab { display: none; }
-  .panel.closed .panel-head, .panel.closed .panel-scroll { visibility: hidden; }
+  .panel.closed .panel-head, .panel.closed .panel-scroll { display: none; }
+  .viewport { position: absolute; inset: 0; }
   .pricebar { cursor: pointer; }
   .pb-tap { display: inline; }
   .seg button { padding: 7px 10px; font-size: 12px; white-space: nowrap; }

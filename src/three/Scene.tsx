@@ -35,12 +35,14 @@ function presetFor(geo: BuildingGeometry, preset: number) {
 function CameraRig({ geo, preset, modelKey }: { geo: BuildingGeometry; preset: number; modelKey: string }) {
   const controls = useRef<OrbitControlsImpl>(null);
   const goal = useRef<{ pos: THREE.Vector3; target: THREE.Vector3; t: number } | null>(null);
-  const { camera } = useThree();
+  const { camera, size } = useThree();
   const lastKey = useRef('');
+  const aspectK = Math.max(1, 1.35 / Math.max(0.3, size.width / size.height));
 
   useEffect(() => {
     const key = modelKey + ':' + preset;
     const p = presetFor(geo, preset);
+    if (preset !== 4) p.pos.sub(p.target).multiplyScalar(aspectK).add(p.target);
     if (lastKey.current === '') {
       camera.position.copy(p.pos);
       controls.current?.target.copy(p.target);
@@ -52,7 +54,7 @@ function CameraRig({ geo, preset, modelKey }: { geo: BuildingGeometry; preset: n
       lastKey.current = key;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, modelKey, geo.extW, geo.extD, geo.extHeight]);
+  }, [preset, modelKey, geo.extW, geo.extD, geo.extHeight, aspectK]);
 
   useFrame((_, dt) => {
     const g = goal.current;
